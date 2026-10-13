@@ -2,7 +2,7 @@
 # whenever the repo's HEAD changes, and keeps polling for ~8.4 h (Kaggle TPU session cap is 9 h). Fix code -> push ->
 # the running session picks it up within ~90 s. A file named STOP in the repo ends the session early (so /kaggle/working is saved).
 import os, subprocess, time, sys, shutil
-REPO = os.environ.get("REPO", "https://github.com/REPO_OWNER/REPO_NAME.git"); BRANCH = os.environ.get("BRANCH", "main")
+REPO = os.environ.get("REPO", "https://github.com/su-351917/tpu-probe.git"); BRANCH = os.environ.get("BRANCH", "main")
 POLL, BUDGET = 90, 8.4 * 3600
 try:
     from kaggle_secrets import UserSecretsClient
