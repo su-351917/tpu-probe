@@ -24,7 +24,7 @@ def sh(cmd, **kw): return subprocess.run(cmd, shell=True, capture_output=True, t
 def head():
     r = sh(f"cd {SRC} && git rev-parse --short HEAD"); return r.stdout.strip() if r.returncode == 0 else None
 t0 = time.time(); last = None; n = 0
-print("launcher start", "token" if os.environ.get("GITHUB_TOKEN") else "NO GITHUB_TOKEN secret (push-back will fail)",, time.strftime("%H:%M:%S"), "repo", REPO.split("@")[-1], flush=True)
+print("launcher start", "token" if os.environ.get("GITHUB_TOKEN") else "NO GITHUB_TOKEN secret (push-back will fail)", time.strftime("%H:%M:%S"), "repo", REPO.split("@")[-1], flush=True)
 while time.time() - t0 < BUDGET:
     if not os.path.isdir(SRC):
         r = sh(f"git clone -q --depth 50 -b {BRANCH} '{REPO}' {SRC}")
