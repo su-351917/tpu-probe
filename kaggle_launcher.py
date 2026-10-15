@@ -15,11 +15,11 @@ try:
     except Exception: pass
 except Exception: pass
 W = "/kaggle/working"; SRC = f"{W}/src"; LOGS = f"{W}/logs"; os.makedirs(LOGS, exist_ok=True)
-def warm():  # touch the TPU so Kaggle's "TPU idle > 2 h" watchdog (exit 137, seen 2026-10-14) does not kill the session
-    try:
-        import torch, torch_xla.core.xla_model as xm
-        d = xm.xla_device(); a = torch.randn(1024, 1024, device=d); b = (a @ a).sum(); xm.mark_step(); return float(b)
-    except Exception as e: return f"warm failed: {e}"
+def warm():  # touch the TPU so Kaggle's "TPU idle > 2 h" watchdog (exit 137, seen 2026-10-14) does not kill the session.
+    # MUST run in a short-lived SUBPROCESS: initializing XLA inside the launcher holds all 8 /dev/vfio chips forever and every later run fails with "Device or resource busy" (seen 2026-10-15).
+    code = "import torch, torch_xla.core.xla_model as xm; d = xm.xla_device(); a = torch.randn(1024, 1024, device=d); print(float((a @ a).sum()))"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, env=dict(os.environ, PJRT_DEVICE="TPU", TPU_VISIBLE_CHIPS="0", TPU_PROCESS_BOUNDS="1,1,1", TPU_CHIPS_PER_PROCESS_BOUNDS="1,1,1"))
+    return r.stdout.strip()[-20:] if r.returncode == 0 else f"warm failed: {r.stderr[-120:]}"
 def sh(cmd, **kw): return subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw)
 def head():
     r = sh(f"cd {SRC} && git rev-parse --short HEAD"); return r.stdout.strip() if r.returncode == 0 else None
