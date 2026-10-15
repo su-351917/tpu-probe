@@ -113,14 +113,59 @@ class HashMoEMem(nn.Module):   # hash-routed MoE (Hash Layers, Roller 2021) = "t
                 m = (e_id == e).nonzero(as_tuple=True)[0]
                 if m.numel(): out.index_add_(0, m, g[m, k:k + 1] * s.vals[e](xf[m]))
         s.last_idx = torch.stack(sel, -1).view(*sh, -1); return out.view(*sh, D)
-MEMS = {"ctx": CtxMem, "hashbag": HashBagMem, "hashbagwide": HashBagWide, "hashmoe": HashMoEMem, "shift": ShiftMem, "hashord": HashOrdMem, "hashbagbi": HashBagBiMem, "hash": HashMem, "hashctx": HashCtxMem, "none": None}
+class MixMem(nn.Module):   # mixed key: hashbag rows (isolation, local reach) + ctx rows (hidden-state addressing, long reach); both tables written in MODE=write
+    def __init__(s): super().__init__(); s.hb = HashBagMem(); s.cx = CtxMem()
+    def forward(s, x, ids):
+        o = s.hb(x, ids) + s.cx(x, ids); s.last_idx = torch.cat([s.hb.last_idx, s.cx.last_idx + 10 ** 6], -1); return o
+class HashWordMem(HashBagMem):   # tokenizer-aware keys: the address of a position is the hash of its WORD so far (tokens merged until the next 'Ġ'-initial token; run capped at 4), then bag over the last W positions
+    def __init__(s):
+        super().__init__()
+        from transformers import AutoTokenizer as _AT2
+        tk = _AT2.from_pretrained("LiquidAI/LFM2.5-350M-Base"); toks = tk.convert_ids_to_tokens(list(range(VOCAB)))
+        st = torch.tensor([1 if (t is None or t.startswith("Ġ") or not t.isascii()) else 0 for t in toks], dtype=torch.int64)   # non-ASCII (e.g. Japanese byte pieces) -> every token starts a unit
+        s.register_buffer("is_start", st)
+    def word_ids(s, ids):   # rolling hash within a word, reset at word starts or after 4 tokens
+        B, T_ = ids.shape; out = torch.empty_like(ids); h = torch.zeros(B, dtype=torch.int64, device=ids.device); run = torch.zeros(B, dtype=torch.int64, device=ids.device)
+        for t in range(T_):
+            tok = ids[:, t]; start = (s.is_start[tok] == 1) | (run >= 4)
+            h = torch.where(start, tok * 7919 % ROWS, (h * 31 + tok * 7919) % ROWS); run = torch.where(start, torch.ones_like(run), run + 1); out[:, t] = h
+        return out
+    def forward(s, x, ids): return super().forward(x, s.word_ids(ids))
+class HashExtMem(HashBagMem):   # keys from an EXTERNAL segmenter: decode the core's tokens, re-segment with the sarashina2.2 tokenizer (word-level Japanese), and give every core token the hash of the sarashina unit that covers it
+    def __init__(s):
+        super().__init__()
+        from transformers import AutoTokenizer as _AT3
+        s.core_tok = _AT3.from_pretrained("LiquidAI/LFM2.5-350M-Base"); s.ext_tok = _AT3.from_pretrained("sbintuitions/sarashina2.2-0.5b"); s.cache = {}
+    def ext_ids(s, ids):
+        out = torch.empty_like(ids); idl = ids.tolist()
+        for b, row in enumerate(idl):
+            key = hash(tuple(row))
+            if key in s.cache: out[b] = s.cache[key].to(ids.device); continue
+            text = s.core_tok.decode(row, skip_special_tokens=False)
+            enc = s.core_tok(text, add_special_tokens=False, return_offsets_mapping=True); offs = enc["offset_mapping"]
+            ext = s.ext_tok(text, add_special_tokens=False, return_offsets_mapping=True); eoff = ext["offset_mapping"]; eid = ext["input_ids"]
+            # char -> ext token id
+            cmap = [0] * (len(text) + 1)
+            for tid, (a, z) in zip(eid, eoff):
+                for c in range(a, max(z, a + 1)): 
+                    if c < len(cmap): cmap[c] = tid
+            vals = []
+            n = min(len(offs), len(row))
+            for i in range(len(row)):
+                if i < n and offs[i][1] > offs[i][0]: vals.append(cmap[min(offs[i][0], len(cmap) - 1)])
+                else: vals.append(row[i])   # fallback: the core token itself
+            v = torch.tensor([(x * 7919) % ROWS for x in vals], dtype=torch.long); s.cache[key] = v; out[b] = v.to(ids.device)
+            if len(s.cache) > 4096: s.cache.clear()
+        return out
+    def forward(s, x, ids): return super().forward(x, s.ext_ids(ids))
+MEMS = {"ctx": CtxMem, "hashbag": HashBagMem, "hashword": HashWordMem, "hashext": HashExtMem, "mix": MixMem, "hashbagwide": HashBagWide, "hashmoe": HashMoEMem, "shift": ShiftMem, "hashord": HashOrdMem, "hashbagbi": HashBagBiMem, "hash": HashMem, "hashctx": HashCtxMem, "none": None}
 
 # ---------------- tiny LM ----------------
 MEMMODE = E("MEMMODE", "add")   # add | mul | win
 class Block(nn.Module):
-    def __init__(s, mem):
+    def __init__(s, mem, smem=None):
         super().__init__(); s.ln1, s.ln2 = nn.LayerNorm(D), nn.LayerNorm(D); s.qkv = nn.Linear(D, 3 * D); s.o = nn.Linear(D, D)
-        s.f1, s.f2 = nn.Linear(D, 4 * D), nn.Linear(4 * D, D); s.mem = mem
+        s.f1, s.f2 = nn.Linear(D, 4 * D), nn.Linear(4 * D, D); s.mem = mem; s.smem = smem   # smem: a table shared across depth, added on top of the per-layer table
     def forward(s, x, ids):
         B, T_, _ = x.shape; q, k, v = s.qkv(s.ln1(x)).view(B, T_, 3, H, D // H).unbind(2)
         a = F.scaled_dot_product_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True).transpose(1, 2).reshape(B, T_, D)
@@ -130,13 +175,20 @@ class Block(nn.Module):
         f = s.f2(h)
         if s.mem is not None and MEMMODE == "add":
             with torch.autocast(AC, enabled=False): f = f + s.mem(y.float(), ids).to(f.dtype)
+        if s.smem is not None:
+            with torch.autocast(AC, enabled=False): f = f + s.smem(y.float(), ids).to(f.dtype)
         if s.mem is not None and MEMMODE == "mul":
             with torch.autocast(AC, enabled=False): f = f * (1.0 + torch.tanh(s.mem(y.float(), ids))).to(f.dtype)   # memory gates the FFN output
         return x + f
 class LM(nn.Module):
     def __init__(s):
         super().__init__(); s.emb = nn.Embedding(VOCAB, D); s.pos = nn.Embedding(T, D); nn.init.normal_(s.emb.weight, std=0.02); nn.init.normal_(s.pos.weight, std=0.02)
-        s.blocks = nn.ModuleList([Block(MEMS[ARM]() if (MEMS[ARM] and i in MEM_LAYERS) else None) for i in range(NBLK)]) if NBLK > 0 else nn.ModuleList()
+        if E("SHARE_MEM", "0") == "1" and MEMS[ARM]:   # "vertical" table: ONE table read at every memory layer (values and gate shared across depth)
+            shared = MEMS[ARM](); s.blocks = nn.ModuleList([Block(shared if i in MEM_LAYERS else None) for i in range(NBLK)])
+        elif E("SHARE_MEM", "0") == "2" and MEMS[ARM]:   # per-layer tables PLUS one depth-shared table read at every memory layer
+            shared = MEMS[ARM](); s.shared_mem = shared; s.blocks = nn.ModuleList([Block(MEMS[ARM]() if i in MEM_LAYERS else None, shared if i in MEM_LAYERS else None) for i in range(NBLK)])
+        else:
+            s.blocks = nn.ModuleList([Block(MEMS[ARM]() if (MEMS[ARM] and i in MEM_LAYERS) else None) for i in range(NBLK)]) if NBLK > 0 else nn.ModuleList()
         s.tmem = nn.ModuleList([MEMS[ARM]() for _ in range(2)]) if NBLK == 0 and MEMS[ARM] else None; s.lnf = nn.LayerNorm(D)
     def forward(s, ids):   # LOOP>1: the whole 4-block stack is applied LOOP times with shared weights (looped LM, Ouro/CIT-style); tables are re-read every loop
         x = s.emb(ids) + s.pos(torch.arange(ids.shape[1], device=ids.device))
@@ -145,7 +197,11 @@ class LM(nn.Module):
         if s.tmem is not None:
             for m in s.tmem: x = x + m(x.float(), ids).to(x.dtype)
         return s.lnf(x) @ s.emb.weight.t()
-    def mems(s): return [b.mem for b in s.blocks if b.mem is not None] + (list(s.tmem) if s.tmem is not None else [])
+    def mems(s):
+        base = [b.mem for b in s.blocks if b.mem is not None] + (list(s.tmem) if s.tmem is not None else [])
+        if E("SHARE_MEM", "0") == "1": base = base[:1]
+        if E("SHARE_MEM", "0") == "2": base = base + [s.shared_mem]
+        return base
 model = LM().to(dev)
 n_core = sum(p.numel() for n, p in model.named_parameters() if ".mem." not in n); n_mem = sum(p.numel() for n, p in model.named_parameters() if ".mem." in n)
 print(f"ARM {ARM} LOOP {LOOP} core {n_core/1e6:.1f}M mem {n_mem/1e6:.1f}M", flush=True)
@@ -213,7 +269,7 @@ def evals(): return {n: bpt(n) for n in names}
 mem_p = [p for n, p in model.named_parameters() if ".mem." in n]; core_p = [p for n, p in model.named_parameters() if ".mem." not in n]
 opt = torch.optim.AdamW([{"params": core_p, "lr": 1e-3, "weight_decay": 0.1}, {"params": mem_p, "lr": 3e-3, "weight_decay": 0.0}], betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 200) * 0.5 * (1 + math.cos(math.pi * min(s, STEPS) / STEPS)))
-TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}"
+TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}{'_r' + str(ROWS) if ROWS != 16384 else ''}{'_shared' if E('SHARE_MEM', '0') == '1' else ('_both' if E('SHARE_MEM', '0') == '2' else '')}{'_diag' + E('DIAG') if E('DIAG') and E('DIAG') != '0' else ''}{'_L' + E('MEM_LAYERS').replace(',', '') if E('MEM_LAYERS') and E('MEM_LAYERS') != '1,3' else ''}"
 MODE = E("MODE", "train")
 def load_ckpt(path):   # checkpoints saved before the f1/f2 split used blocks.N.ffn.0 / ffn.2
     sd = torch.load(path, map_location=dev); sd = {k.replace(".ffn.0.", ".f1.").replace(".ffn.2.", ".f2."): v for k, v in sd.items()}; model.load_state_dict(sd)
@@ -291,7 +347,7 @@ base = {"acc_train_tpl": acc(TR), "acc_test_tpl": acc(TE), "ja": bpt("fineweb2_j
 for p in model.parameters(): p.requires_grad_(False)
 vals = [p for n, p in model.named_parameters() if ".mem." in n and "values" in n or (".mem." in n and "vals" in n)]
 for p in vals: p.requires_grad_(True)
-wopt = torch.optim.Adam(vals, lr=1e-2); items = [(n, t) for n in facts for t in TR]
+wopt = torch.optim.Adam(vals, lr=float(E("WLR", "1e-2"))); items = [(n, t) for n in facts for t in TR]
 for it in range(50):
     random.shuffle(items); tl = 0
     for n, t in items:
@@ -330,7 +386,7 @@ if MODE == "write":
             if k > 0: fz[usage[li].topk(k).indices] = True
             masks.append(fz)
         model._masks = masks
-        wo = torch.optim.Adam(vals, lr=1e-2); its = [(n, t) for n in fs for t in TR]
+        wo = torch.optim.Adam(vals, lr=float(E("WLR", "1e-2"))); its = [(n, t) for n in fs for t in TR]
         for it in range(50):
             random.shuffle(its)
             for n, t in its:
