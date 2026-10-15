@@ -21,5 +21,6 @@ for j in "${JL[@]}"; do
   [ -e /workspace/STOP ] && break
   echo "=== job $name [$envs] $(date +%H:%M:%S)"
   ( export DATA=/workspace/data/tok OUT=/workspace/out STEPS=$STEPS; export $envs; python tiny_hashkey.py > /workspace/out/$name.log 2>&1; echo "EXIT $? $name $(date +%H:%M:%S)" >> /workspace/out/status.log )
+  echo "--- results $name"; grep -E "^(ARM|EVAL|ADDR|RESULT|DIST|WRITE|GROW|Traceback|.*Error)" /workspace/out/$name.log | cut -c1-1200   # results go to stdout so the instance log (API) carries them; no secrets needed on the box
 done
 echo ALL_JOBS_DONE >> /workspace/out/status.log
