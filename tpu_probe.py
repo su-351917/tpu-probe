@@ -66,8 +66,8 @@ def run(rank=0, nproc=1):
         print("RESULT_JSON " + json.dumps(out), flush=True); open("result_tpu_probe.jsonl", "a").write(json.dumps(out) + "\n")
 def _mp(index, *a): run(index, xm.xrt_world_size() if hasattr(xm, "xrt_world_size") else int(E("NPROC", "8")))
 if __name__ == "__main__":
-    print("devices:", torch_xla.device_count() if hasattr(torch_xla, "device_count") else "?", flush=True)
-    if STAGE == 1: run(0, 1)
+    if STAGE == 1:   # touching the XLA runtime before xmp.spawn breaks stage 2 ("Runtime is already initialized"), so only query devices here
+        print("devices:", torch_xla.device_count() if hasattr(torch_xla, "device_count") else "?", flush=True); run(0, 1)
     else:
         import torch_xla.distributed.xla_multiprocessing as xmp
         xmp.spawn(_mp, args=())
