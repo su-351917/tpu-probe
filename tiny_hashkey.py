@@ -4,7 +4,7 @@ import os, math, json, time, random, numpy as np, torch, torch.nn as nn, torch.n
 E = os.environ.get
 ARM = E("ARM", "ctx"); LOOP = int(E("LOOP", "1")); NBLK = int(E("NBLK", "4")); STEPS = int(E("STEPS", "3000")); BS, T = int(E("BS", "16")), 512; D, L, H = int(E("D", "256")), 4, 4
 DATA = E("DATA", "/mnt/work2/cpt_lfm/data2/tok"); OUT = E("OUT", "/mnt/work2/cpt_lfm/out_tiny"); os.makedirs(OUT, exist_ok=True)
-MIX = "fineweb2_ja:0.5,fineweb_edu_en:0.3,wiki_ja:0.2"; MEM_LAYERS = [1, 3]; ROWS = 16384
+MIX = "fineweb2_ja:0.5,fineweb_edu_en:0.3,wiki_ja:0.2"; MEM_LAYERS = [int(x) for x in E("MEM_LAYERS", "1,3").split(",")]; ROWS = int(E("ROWS", "16384"))
 TPU = E("TPU", "0") == "1"
 if TPU:
     import torch_xla, torch_xla.core.xla_model as xm; dev = xm.xla_device(); AC, ACD = "xla", torch.bfloat16
@@ -12,7 +12,7 @@ if TPU:
 else:
     dev = "cuda"; AC, ACD = "cuda", torch.float16
     def step_mark(): pass
-torch.manual_seed(0); random.seed(0); np.random.seed(0)
+_SEED = int(E("SEED", "0")); torch.manual_seed(_SEED); random.seed(_SEED); np.random.seed(_SEED)
 VOCAB = 65536
 bins, probs = {}, []
 for it in MIX.split(","):
@@ -64,7 +64,7 @@ class HashCtxMem(nn.Module):  # bigram hash picks a bucket of 64 rows; context q
         sc = torch.einsum("nh,nbh->nb", q, s.keys[b]); v, j = sc.topk(s.K, -1); w = torch.softmax(v, -1); idx = b[:, None] * s.BW + j
         s.last_idx = idx.view(*sh, -1); return (s.values(idx) * w[..., None]).sum(1).view(*sh, D)
 class HashBagMem(nn.Module):  # bag of the last 8 tokens: one unigram-hash table, each offset gated by the hidden state (position-invariant -> item token reachable from any template)
-    W = 8
+    W = int(E("HB_W", "8"))
     def __init__(s):
         super().__init__(); s.vals = nn.Embedding(ROWS, D); nn.init.zeros_(s.vals.weight); s.gate = nn.Linear(D, s.W)
     def forward(s, x, ids):
@@ -213,11 +213,12 @@ def evals(): return {n: bpt(n) for n in names}
 mem_p = [p for n, p in model.named_parameters() if ".mem." in n]; core_p = [p for n, p in model.named_parameters() if ".mem." not in n]
 opt = torch.optim.AdamW([{"params": core_p, "lr": 1e-3, "weight_decay": 0.1}, {"params": mem_p, "lr": 3e-3, "weight_decay": 0.0}], betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 200) * 0.5 * (1 + math.cos(math.pi * min(s, STEPS) / STEPS)))
+TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}"
 MODE = E("MODE", "train")
 def load_ckpt(path):   # checkpoints saved before the f1/f2 split used blocks.N.ffn.0 / ffn.2
     sd = torch.load(path, map_location=dev); sd = {k.replace(".ffn.0.", ".f1.").replace(".ffn.2.", ".f2."): v for k, v in sd.items()}; model.load_state_dict(sd)
 if MODE == "grow":   # hash-table growth without dilution: double the rows, new rows zero-init, old tokens keep their rows (new rows only receive tokens that COLLIDED before)
-    load_ckpt(f"{OUT}/{ARM}.pt"); model.eval()
+    load_ckpt(f"{OUT}/{TAG}.pt" if os.path.exists(f"{OUT}/{TAG}.pt") else f"{OUT}/{ARM}.pt"); model.eval()
     before = {n: bpt(n) for n in names}; print("GROW before", json.dumps(before), flush=True)
     for m in model.mems():
         old = m.vals.weight.data; new = torch.zeros(2 * old.shape[0], old.shape[1], device=dev); new[:old.shape[0]] = old; m.vals = nn.Embedding.from_pretrained(new, freeze=False)
@@ -235,8 +236,8 @@ if MODE == "grow":   # hash-table growth without dilution: double the rows, new 
     after2 = {n: bpt(n) for n in names}; print("GROW after(copy, all old reads identical)", json.dumps(after2), flush=True)
     print("GROW_RESULT", json.dumps({"arm": ARM, "before": before, "split": after, "copy": after2}), flush=True); raise SystemExit
 if MODE == "write":
-    load_ckpt(f"{OUT}/{ARM}.pt"); STEPS = 0; print("loaded", f"{OUT}/{ARM}.pt", flush=True)
-scaler = torch.amp.GradScaler(enabled=not TPU); t0 = time.time(); TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}"; log = open(f"{OUT}/{TAG}{'_write' if MODE == 'write' else ''}.jsonl", "w")
+    _ck = f"{OUT}/{TAG}.pt" if os.path.exists(f"{OUT}/{TAG}.pt") else f"{OUT}/{ARM}.pt"; load_ckpt(_ck); STEPS = 0; print("loaded", _ck, flush=True)
+scaler = torch.amp.GradScaler(enabled=not TPU); t0 = time.time(); log = open(f"{OUT}/{TAG}{'_write' if MODE == 'write' else ''}.jsonl", "w")
 for step in range(STEPS + 1):
     if MODE == "write": break
     if step % 1000 == 0 or step == STEPS:
@@ -257,7 +258,7 @@ cands = ["red", "blue", "green", "black", "white", "yellow", "brown", "pink", "g
 colors = [c for c in cands if len(tok(" " + c, add_special_tokens=False).input_ids) == 1][:8]; cid = torch.tensor([tok(" " + c, add_special_tokens=False).input_ids[0] for c in colors], device=dev)
 assert len(colors) == 8, colors
 TR = ["Item {n} is {c}", "The color of item {n} is {c}"]; TE = ["Item {n}: {c}", "What is item {n}? It is {c}"]
-NI = 32; facts = {n: random.randrange(8) for n in range(1, NI + 1)}
+NI = int(E("NI", "32")); facts = {n: random.randrange(8) for n in range(1, NI + 1)}
 def enc(tpl, n, c):   # returns ids (1, len) of the prefix up to (not including) the color token, and the color token id
     pre = tok(tpl.split(" {c}")[0].format(n=n) if " {c}" in tpl else tpl.format(n=n, c="").rstrip(), add_special_tokens=False).input_ids
     full = tok(tpl.format(n=n, c=c), add_special_tokens=False).input_ids
@@ -300,6 +301,11 @@ after = {"acc_train_tpl": acc(TR), "acc_test_tpl": acc(TE), "ja": bpt("fineweb2_
 res = {"arm": ARM, "addr": addr, "before": base, "after": after, "damage_ja": round(after["ja"] - base["ja"], 4)}
 print("RESULT", json.dumps(res), flush=True); log.write(json.dumps(res) + "\n"); log.flush()
 if MODE == "write":
+    FILL = "which was listed in the catalog and later reviewed by the committee for several weeks before anyone noticed the matter again".split()
+    dist = {}
+    for d in [0, 2, 4, 8, 16, 32]:
+        tpl = "Item {n}" + (" " + " ".join((FILL * 4)[:d]) if d else "") + " is {c}"; dist[d] = acc(["Item {n} is {c}"] if d == 0 else [tpl])[tpl if d else "Item {n} is {c}"]
+    print("DIST", json.dumps({"arm": ARM, "W": getattr(model.mems()[0], "W", None), "acc_by_distance": dist}), flush=True); log.write(json.dumps({"dist": dist}) + "\n"); log.flush()
     # ---- background row usage (held-out ja 100k tokens) -> freeze the top-p% most used rows during writes (Sparse Memory Finetuning idea)
     base_sd = {n: p_.detach().clone() for n, p_ in model.named_parameters() if ".mem." in n and ("values" in n or "vals" in n)}
     def restore():

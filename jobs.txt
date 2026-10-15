@@ -1,8 +1,8 @@
-none_d64_l1|ARM=none D=64 LOOP=1 TASKS=1
-hashbag_d64_l1|ARM=hashbag D=64 LOOP=1 TASKS=1
-none_d64_l4|ARM=none D=64 LOOP=4 TASKS=1
-hashbag_d64_l4|ARM=hashbag D=64 LOOP=4 TASKS=1
-none_d64_l8|ARM=none D=64 LOOP=8 TASKS=1
-hashbag_d64_l8|ARM=hashbag D=64 LOOP=8 TASKS=1
-hashbag_mul|ARM=hashbag MEMMODE=mul TASKS=1
-hashbagwide_win|ARM=hashbagwide MEMMODE=win TASKS=1
+none_d512_l8_s0|ARM=none D=512 NBLK=8 TASKS=1 COT=1
+shift_d512_l8_s0|ARM=shift D=512 NBLK=8 TASKS=1 COT=1
+hashbag_d512_l8_s0|ARM=hashbag D=512 NBLK=8 TASKS=1 COT=1
+none_d512_l8_s1|ARM=none D=512 NBLK=8 TASKS=1 COT=1 SEED=1
+shift_d512_l8_s1|ARM=shift D=512 NBLK=8 TASKS=1 COT=1 SEED=1
+hashbag_d512_l8_s1|ARM=hashbag D=512 NBLK=8 TASKS=1 COT=1 SEED=1
+hashbagbi_d512_l8_s0|ARM=hashbagbi D=512 NBLK=8 TASKS=1 COT=1
+shift_d256_l4_s0|ARM=shift D=256 NBLK=4 TASKS=1 COT=1
