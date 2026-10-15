@@ -1,0 +1,8 @@
+none_d64_l1|ARM=none D=64 LOOP=1 TASKS=1
+hashbag_d64_l1|ARM=hashbag D=64 LOOP=1 TASKS=1
+none_d64_l4|ARM=none D=64 LOOP=4 TASKS=1
+hashbag_d64_l4|ARM=hashbag D=64 LOOP=4 TASKS=1
+none_d64_l8|ARM=none D=64 LOOP=8 TASKS=1
+hashbag_d64_l8|ARM=hashbag D=64 LOOP=8 TASKS=1
+hashbag_mul|ARM=hashbag MEMMODE=mul TASKS=1
+hashbagwide_win|ARM=hashbagwide MEMMODE=win TASKS=1
