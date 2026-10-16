@@ -3,7 +3,7 @@
 # Jobs are "NAME|ENV..." lines in jobs.txt (edit + push to change). Data: public token bins from the HF dataset below.
 set -x
 W=/kaggle/working; DATA=$W/data; mkdir -p $DATA/tok $W/logs $W/out_par
-pip install -q -U huggingface_hub 2>/dev/null | tail -1
+pip install -q "huggingface_hub>=1.5,<2.0" 2>/dev/null | tail -1   # do NOT upgrade to 2.x: Kaggle transformers 5.12 requires <2.0
 for i in $(seq 1 40); do   # the upload may still be in progress: retry until all files are present
   python - <<'PY' && break
 from huggingface_hub import snapshot_download
