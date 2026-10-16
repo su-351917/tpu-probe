@@ -9,7 +9,8 @@ export PJRT_DEVICE=TPU
 [ -z "$TPU_ACCELERATOR_TYPE" ] && export TPU_ACCELERATOR_TYPE=v5litepod-8
 MODE=${MODE:-$(cat MODE 2>/dev/null || echo par)}
 case "$MODE" in
-  par) STEPS=${STEPS:-30} bash par.sh ;;
+  par) echo "== run06 diagnostics (LFM models in the serve run)"; grep -nE "LFM2.5-350M|1.2B-JP|8B-A1B|SERVE_|Traceback|Error|error|Killed|Segmentation|timeout" /kaggle/working/logs/run06_a31e3d6.log 2>/dev/null | grep -v "INFO" | head -150 | cut -c1-320; du -sh /root/.cache/huggingface 2>/dev/null; rm -rf /root/.cache/huggingface/hub/models--* 2>/dev/null; df -h /kaggle/working | tail -1
+       STEPS=${STEPS:-30} bash par.sh ;;
   serve) bash serve.sh ;;
   report) echo "== SERVE lines from earlier runs"; grep -h "^SERVE_" /kaggle/working/logs/run0*.log 2>/dev/null | cut -c1-700; echo "== result_serve_bench.jsonl"; cat /kaggle/working/logs/result_serve_bench.jsonl 2>/dev/null | cut -c1-700; df -h /kaggle/working | tail -1; du -sh /kaggle/working/hf 2>/dev/null; rm -rf /kaggle/working/hf/hub/models--* ; df -h /kaggle/working | tail -1 ;;   # print what the launcher's tail cut off, then free the model cache
   *) STAGE=${STAGE:-2} python tpu_probe.py ;;
