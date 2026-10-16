@@ -26,6 +26,12 @@ def batch(n):
     return torch.from_numpy(np.stack(out)).to(dev)
 
 # ---------------- memory tables ----------------
+IDF = E("IDF", "0") == "1"   # IDF=1: each unigram in the hashbag is weighted by log(N/(count+1)) (mean 1), so rare tokens dominate the address (BM25 idea)
+if IDF:
+    _cnt = np.zeros(VOCAB, dtype=np.int64)
+    for _b in bins.values(): _cnt += np.bincount(np.asarray(_b[:20_000_000]).astype(np.int64), minlength=VOCAB)
+    _idf = np.log(_cnt.sum() / (_cnt + 1.0)); _idf = _idf / _idf[_cnt > 0].mean()
+    IDF_W = torch.tensor(_idf, dtype=torch.float32, device=dev)
 def ihash(ids, mults, mod):   # ids: (B,T) int64; n-gram hash of the last len(mults) tokens (left-padded with 0) -> (B,T) in [0,mod)
     h = torch.zeros_like(ids)
     for k, m in enumerate(mults):
@@ -71,7 +77,7 @@ class HashBagMem(nn.Module):  # bag of the last 8 tokens: one unigram-hash table
         g = torch.sigmoid(s.gate(x)); out = 0; sel = []
         for k in range(s.W):
             sh = F.pad(ids, (k, 0))[:, :ids.shape[1]] if k else ids; h = (sh * 7919) % ROWS
-            out = out + g[..., k:k + 1] * s.vals(h); sel.append(h)
+            v = s.vals(h); out = out + g[..., k:k + 1] * (v * IDF_W[sh][..., None].to(v.dtype) if IDF else v); sel.append(h)
         s.last_idx = torch.stack(sel, -1); return out
 class ShiftMem(nn.Module):   # CONTROL for hashbag: same 8-offset gated bag, but values come from a tiny 32-d token embedding + per-offset linear (0.2M params) instead of an 8.4M table.
     W = 8                     # if it matches hashbag on reverse/sort, the gain is a routing primitive (token-at-offset path), not table capacity
@@ -97,7 +103,7 @@ class HashBagBiMem(HashBagMem):  # ablation: bag of 8 unigrams + the last bigram
     def forward(s, x, ids):
         g = torch.sigmoid(s.gate(x)); out = 0; sel = []
         for k in range(s.W):
-            sh = F.pad(ids, (k, 0))[:, :ids.shape[1]] if k else ids; h = (sh * 7919) % ROWS; out = out + g[..., k:k + 1] * s.vals(h); sel.append(h)
+            sh = F.pad(ids, (k, 0))[:, :ids.shape[1]] if k else ids; h = (sh * 7919) % ROWS; v = s.vals(h); out = out + g[..., k:k + 1] * (v * IDF_W[sh][..., None].to(v.dtype) if IDF else v); sel.append(h)
         hb = ihash(ids, [7919, 104729], ROWS); out = out + g[..., s.W:s.W + 1] * s.vals(hb); sel.append(hb)
         s.last_idx = torch.stack(sel, -1); return out
 class HashMoEMem(nn.Module):   # hash-routed MoE (Hash Layers, Roller 2021) = "table whose rows are tiny FFNs": expert e = hash(token at offset k), gated per offset; parameter-matched to hashbag (64 experts x 131k)
@@ -269,7 +275,7 @@ def evals(): return {n: bpt(n) for n in names}
 mem_p = [p for n, p in model.named_parameters() if ".mem." in n]; core_p = [p for n, p in model.named_parameters() if ".mem." not in n]
 opt = torch.optim.AdamW([{"params": core_p, "lr": 1e-3, "weight_decay": 0.1}, {"params": mem_p, "lr": 3e-3, "weight_decay": 0.0}], betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 200) * 0.5 * (1 + math.cos(math.pi * min(s, STEPS) / STEPS)))
-TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}{'_r' + str(ROWS) if ROWS != 16384 else ''}{'_shared' if E('SHARE_MEM', '0') == '1' else ('_both' if E('SHARE_MEM', '0') == '2' else '')}{'_diag' + E('DIAG') if E('DIAG') and E('DIAG') != '0' else ''}{'_L' + E('MEM_LAYERS').replace(',', '') if E('MEM_LAYERS') and E('MEM_LAYERS') != '1,3' else ''}"
+TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}{'_r' + str(ROWS) if ROWS != 16384 else ''}{'_shared' if E('SHARE_MEM', '0') == '1' else ('_both' if E('SHARE_MEM', '0') == '2' else '')}{'_diag' + E('DIAG') if E('DIAG') and E('DIAG') != '0' else ''}{'_idf' if E('IDF', '0') == '1' else ''}{'_L' + E('MEM_LAYERS').replace(',', '') if E('MEM_LAYERS') and E('MEM_LAYERS') != '1,3' else ''}"
 MODE = E("MODE", "train")
 def load_ckpt(path):   # checkpoints saved before the f1/f2 split used blocks.N.ffn.0 / ffn.2
     sd = torch.load(path, map_location=dev); sd = {k.replace(".ffn.0.", ".f1.").replace(".ffn.2.", ".f2."): v for k, v in sd.items()}; model.load_state_dict(sd)
