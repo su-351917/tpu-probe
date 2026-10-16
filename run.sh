@@ -11,6 +11,7 @@ MODE=${MODE:-$(cat MODE 2>/dev/null || echo par)}
 case "$MODE" in
   par) STEPS=${STEPS:-30} bash par.sh ;;
   serve) bash serve.sh ;;
+  report) echo "== SERVE lines from earlier runs"; grep -h "^SERVE_" /kaggle/working/logs/run0*.log 2>/dev/null | cut -c1-700; echo "== result_serve_bench.jsonl"; cat /kaggle/working/logs/result_serve_bench.jsonl 2>/dev/null | cut -c1-700; df -h /kaggle/working | tail -1; du -sh /kaggle/working/hf 2>/dev/null; rm -rf /kaggle/working/hf/hub/models--* ; df -h /kaggle/working | tail -1 ;;   # print what the launcher's tail cut off, then free the model cache
   *) STAGE=${STAGE:-2} python tpu_probe.py ;;
 esac
 # --- report back (needs GITHUB_TOKEN secret; harmless if absent)
