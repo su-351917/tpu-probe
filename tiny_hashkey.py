@@ -276,7 +276,7 @@ def evals(): return {n: bpt(n) for n in names}
 mem_p = [p for n, p in model.named_parameters() if ".mem." in n]; core_p = [p for n, p in model.named_parameters() if ".mem." not in n]
 opt = torch.optim.AdamW([{"params": core_p, "lr": 1e-3, "weight_decay": 0.1}, {"params": mem_p, "lr": 3e-3, "weight_decay": 0.0}], betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1, (s + 1) / 200) * 0.5 * (1 + math.cos(math.pi * min(s, STEPS) / STEPS)))
-TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}{'_r' + str(ROWS) if ROWS != 16384 else ''}{'_shared' if E('SHARE_MEM', '0') == '1' else ('_both' if E('SHARE_MEM', '0') == '2' else '')}{'_diag' + E('DIAG') if E('DIAG') and E('DIAG') != '0' else ''}{'_idf' if E('IDF', '0') == '1' else ''}{'_L' + E('MEM_LAYERS').replace(',', '') if E('MEM_LAYERS') and E('MEM_LAYERS') != '1,3' else ''}"
+TAG = f"{ARM}{'_loop' + str(LOOP) if LOOP > 1 else ''}{'_nblk' + str(NBLK) if NBLK != 4 else ''}{'_d' + str(D) if D != 256 else ''}{'_' + MEMMODE if MEMMODE != 'add' else ''}{'_cot' if E('COT', '0') == '1' else ''}{'_w' + E('HB_W') if E('HB_W') and E('HB_W') != '8' else ''}{'_r' + str(ROWS) if ROWS != 16384 else ''}{'_shared' if E('SHARE_MEM', '0') == '1' else ('_both' if E('SHARE_MEM', '0') == '2' else '')}{'_diag' + E('DIAG') if E('DIAG') and E('DIAG') != '0' else ''}{'_idf' if E('IDF', '0') == '1' else ''}{'_ne' + E('NE') if E('NE') else ''}{'_dh' + E('DH') if E('DH') else ''}{'_L' + E('MEM_LAYERS').replace(',', '') if E('MEM_LAYERS') and E('MEM_LAYERS') != '1,3' else ''}"
 MODE = E("MODE", "train")
 def load_ckpt(path):   # checkpoints saved before the f1/f2 split used blocks.N.ffn.0 / ffn.2
     sd = torch.load(path, map_location=dev); sd = {k.replace(".ffn.0.", ".f1.").replace(".ffn.2.", ".f2."): v for k, v in sd.items()}; model.load_state_dict(sd)
@@ -308,9 +308,9 @@ for step in range(STEPS + 1):
         if step == STEPS: break
     x = task_batch(BS) if (TASKS and random.random() < TASK_P) else batch(BS)
     opt.zero_grad(set_to_none=True)
-    for xm in x.chunk(ACC):   # ACC>1: gradient accumulation over micro-batches (same tokens/step, less memory; for 12 GB boxes)
-        with torch.autocast(AC, dtype=ACD): lg = model(xm[:, :-1])
-        loss = F.cross_entropy(lg.float().reshape(-1, VOCAB), xm[:, 1:].reshape(-1)); scaler.scale(loss / ACC).backward()
+    for xb in x.chunk(ACC):   # ACC>1: gradient accumulation over micro-batches (same tokens/step, less memory; for 12 GB boxes). NB: never name this xm (shadows torch_xla's xm on TPU)
+        with torch.autocast(AC, dtype=ACD): lg = model(xb[:, :-1])
+        loss = F.cross_entropy(lg.float().reshape(-1, VOCAB), xb[:, 1:].reshape(-1)); scaler.scale(loss / ACC).backward()
     scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); scaler.step(opt); scaler.update(); sched.step(); step_mark()
     if step % 100 == 0: print(f"{step} {loss.item():.3f} {time.time()-t0:.0f}s", flush=True)
 if MODE != "write": torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, f"{OUT}/{TAG}.pt")
