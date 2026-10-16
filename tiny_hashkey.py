@@ -2,7 +2,7 @@
 # ARM=ctx|hash|hashctx|none. Trains ~3k steps on the CPT bins, then runs the addressing diagnostic and a values-only write test.
 import os, math, json, time, random, numpy as np, torch, torch.nn as nn, torch.nn.functional as F
 E = os.environ.get
-ARM = E("ARM", "ctx"); LOOP = int(E("LOOP", "1")); NBLK = int(E("NBLK", "4")); STEPS = int(E("STEPS", "3000")); BS, T = int(E("BS", "16")), 512; D, L, H = int(E("D", "256")), 4, 4
+ARM = E("ARM", "ctx"); LOOP = int(E("LOOP", "1")); NBLK = int(E("NBLK", "4")); STEPS = int(E("STEPS", "3000")); BS, T = int(E("BS", "16")), 512; ACC = int(E("ACC", "1")); D, L, H = int(E("D", "256")), 4, 4
 DATA = E("DATA", "/mnt/work2/cpt_lfm/data2/tok"); OUT = E("OUT", "/mnt/work2/cpt_lfm/out_tiny"); os.makedirs(OUT, exist_ok=True)
 MIX = "fineweb2_ja:0.5,fineweb_edu_en:0.3,wiki_ja:0.2"; MEM_LAYERS = [int(x) for x in E("MEM_LAYERS", "1,3").split(",")]; ROWS = int(E("ROWS", "16384"))
 TPU = E("TPU", "0") == "1"
@@ -300,9 +300,11 @@ for step in range(STEPS + 1):
         r = {"step": step, **evals(), "tasks": task_eval() if TASKS else None, "s": round(time.time() - t0)}; print("EVAL", json.dumps(r), flush=True); log.write(json.dumps(r) + "\n"); log.flush()
         if step == STEPS: break
     x = task_batch(BS) if (TASKS and random.random() < TASK_P) else batch(BS)
-    with torch.autocast(AC, dtype=ACD): lg = model(x[:, :-1])
-    loss = F.cross_entropy(lg.float().reshape(-1, VOCAB), x[:, 1:].reshape(-1))
-    opt.zero_grad(set_to_none=True); scaler.scale(loss).backward(); scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); scaler.step(opt); scaler.update(); sched.step(); step_mark()
+    opt.zero_grad(set_to_none=True)
+    for xm in x.chunk(ACC):   # ACC>1: gradient accumulation over micro-batches (same tokens/step, less memory; for 12 GB boxes)
+        with torch.autocast(AC, dtype=ACD): lg = model(xm[:, :-1])
+        loss = F.cross_entropy(lg.float().reshape(-1, VOCAB), xm[:, 1:].reshape(-1)); scaler.scale(loss / ACC).backward()
+    scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0); scaler.step(opt); scaler.update(); sched.step(); step_mark()
     if step % 100 == 0: print(f"{step} {loss.item():.3f} {time.time()-t0:.0f}s", flush=True)
 if MODE != "write": torch.save({k: v.detach().cpu() for k, v in model.state_dict().items()}, f"{OUT}/{TAG}.pt")
 if ARM == "none" or TASKS: raise SystemExit
