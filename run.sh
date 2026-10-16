@@ -9,10 +9,18 @@ export PJRT_DEVICE=TPU
 [ -z "$TPU_ACCELERATOR_TYPE" ] && export TPU_ACCELERATOR_TYPE=v5litepod-8
 MODE=${MODE:-$(cat MODE 2>/dev/null || echo par)}
 case "$MODE" in
-  par) echo "== previous par results (last EVAL per log)"; for f in /kaggle/working/logs/par_*.log; do echo "## $(basename $f)"; grep -E "^EVAL" $f | tail -1 | cut -c1-420; done 2>/dev/null; rm -f /kaggle/working/logs/par_status.log
+  par) rm -f /kaggle/working/logs/par_status.log
        STEPS=${STEPS:-30} bash par.sh ;;
   serve) bash serve.sh ;;
-  report) echo "== SERVE lines from earlier runs"; grep -h "^SERVE_" /kaggle/working/logs/run0*.log 2>/dev/null | cut -c1-700; echo "== result_serve_bench.jsonl"; cat /kaggle/working/logs/result_serve_bench.jsonl 2>/dev/null | cut -c1-700; df -h /kaggle/working | tail -1; du -sh /kaggle/working/hf 2>/dev/null; rm -rf /kaggle/working/hf/hub/models--* ; df -h /kaggle/working | tail -1 ;;   # print what the launcher's tail cut off, then free the model cache
+  report) python - <<'PY2'
+import glob, json, os, re
+for f in sorted(glob.glob("/kaggle/working/logs/par_*.log"), key=os.path.getmtime)[-20:]:
+    ev = [l for l in open(f, errors="ignore") if l.startswith("EVAL")]
+    if not ev: print(os.path.basename(f)[4:-4], "NO_EVAL"); continue
+    d = json.loads(ev[-1][5:]); t = d.get("tasks") or {}
+    print(os.path.basename(f)[4:-4], d["step"], "ja", round(d["fineweb2_ja"], 3), "en", round(d["fineweb_edu_en"], 3), "wiki", round(d["wiki_ja"], 3), "kv", t.get("kv"), "ch", t.get("chain"), "rev", t.get("reverse"), "sort", t.get("sort"), "cot", t.get("chaincot"), "s", d.get("s"))
+PY2
+  ;;   # print what the launcher's tail cut off, then free the model cache
   *) STAGE=${STAGE:-2} python tpu_probe.py ;;
 esac
 # --- report back (needs GITHUB_TOKEN secret; harmless if absent)

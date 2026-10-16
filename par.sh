@@ -26,5 +26,5 @@ while IFS='|' read -r name envs; do
   i=$((i+1)); [ $i -ge 8 ] && break
 done < jobs.txt
 wait
-for f in $W/logs/par_*.log; do echo "== $f"; grep -E "^(ARM|EVAL|ADDR|RESULT|Traceback|.*Error)" $f | tail -6 | cut -c1-300; done
+for f in $(ls -t $W/logs/par_*.log | head -8); do echo "== $(basename $f): $(grep -E "^EVAL" $f | tail -1 | cut -c1-230) $(grep -E "Error" $f | tail -1 | cut -c1-120)"; done   # compact: the launcher shows only the last 3000 chars
 cp $W/out_par/*.jsonl $W/logs/ 2>/dev/null; cat $W/logs/par_status.log
