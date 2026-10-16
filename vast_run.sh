@@ -4,6 +4,7 @@
 set -x
 cd /workspace || cd /root
 export DEBIAN_FRONTEND=noninteractive
+python -c "import torch,sys; sys.exit(0 if tuple(int(x) for x in torch.__version__.split('+')[0].split('.')[:2])>=(2,6) else 1)" || pip install -q "torch==2.6.0" --index-url https://download.pytorch.org/whl/cu124 2>&1 | tail -1   # transformers 5.19 needs torch.accelerator (>=2.6); image ships 2.5.1
 pip install -q "transformers==5.19.0" "tokenizers==0.23.2" sentencepiece numpy huggingface_hub 2>&1 | tail -1
 [ -d src ] || git clone -q --depth 5 https://github.com/su-351917/tpu-probe.git src
 mkdir -p data/tok out
