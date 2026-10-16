@@ -264,8 +264,9 @@ def task_eval(n=200, seed=12345):
 def bpt(name, ntok=300_000):
     model.eval(); b = bins[name]; a = torch.from_numpy(np.asarray(b[len(b) - HOLD:len(b) - HOLD + ntok]).astype(np.int64)); n = (len(a) - 1) // T
     a = a[:n * T + 1]; tot = 0.0
-    for i in range(0, n, 16):
-        x = torch.stack([a[j * T:(j + 1) * T + 1] for j in range(i, min(n, i + 16))]).to(dev)
+    EB = int(E("EVAL_BS", "16"))   # smaller on memory-tight boxes; same result
+    for i in range(0, n, EB):
+        x = torch.stack([a[j * T:(j + 1) * T + 1] for j in range(i, min(n, i + EB))]).to(dev)
         with torch.autocast(AC, dtype=ACD): lg = model(x[:, :-1])
         tot += F.cross_entropy(lg.float().reshape(-1, VOCAB), x[:, 1:].reshape(-1), reduction="sum").item(); step_mark()
     model.train(); return round(tot / (n * T) / math.log(2), 4)
