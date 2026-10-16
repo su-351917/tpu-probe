@@ -5,8 +5,12 @@ env | grep -iE "tpu|pjrt" | sort | head -12; nproc; free -g | head -2
 python -c "import torch, torch_xla; print('torch', torch.__version__, 'torch_xla', torch_xla.__version__)" 2>&1 | tail -1
 export PJRT_DEVICE=TPU
 [ -z "$TPU_ACCELERATOR_TYPE" ] && export TPU_ACCELERATOR_TYPE=v5litepod-8
-MODE=${MODE:-par}
-if [ "$MODE" = "par" ]; then STEPS=${STEPS:-30} bash par.sh; else STAGE=${STAGE:-2} python tpu_probe.py; fi
+MODE=${MODE:-$(cat MODE 2>/dev/null || echo par)}
+case "$MODE" in
+  par) STEPS=${STEPS:-30} bash par.sh ;;
+  serve) bash serve.sh ;;
+  *) STAGE=${STAGE:-2} python tpu_probe.py ;;
+esac
 # --- report back (needs GITHUB_TOKEN secret; harmless if absent)
 set +x
 R=$(git config --get remote.origin.url); [ -n "$GITHUB_TOKEN" ] && R="https://x-access-token:${GITHUB_TOKEN}@github.com/su-351917/tpu-probe.git"; H=${RUN_HASH:-$(git rev-parse --short HEAD)}; T=$(date +%H%M%S)
