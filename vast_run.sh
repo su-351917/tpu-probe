@@ -4,7 +4,7 @@
 set -x
 cd /workspace || cd /root
 export DEBIAN_FRONTEND=noninteractive
-pip install -q transformers==4.57.1 sentencepiece numpy huggingface_hub 2>&1 | tail -1
+pip install -q "transformers==5.19.0" "tokenizers==0.23.2" sentencepiece numpy huggingface_hub 2>&1 | tail -1
 [ -d src ] || git clone -q --depth 5 https://github.com/su-351917/tpu-probe.git src
 mkdir -p data/tok out
 python - <<'PY'
