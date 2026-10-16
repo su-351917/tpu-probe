@@ -3,6 +3,8 @@
 set -x
 env | grep -iE "tpu|pjrt" | sort | head -12; nproc; free -g | head -2
 python -c "import torch, torch_xla; print('torch', torch.__version__, 'torch_xla', torch_xla.__version__)" 2>&1 | tail -1
+# repair the base env if a previous serve run (vllm-tpu into the system site-packages) broke torch/torch_xla (seen 2026-10-17: torchaudio ABI, _XLAC undefined symbol)
+python -c "import torch_xla" 2>/dev/null || { pip uninstall -y -q vllm vllm-tpu tpu-inference torchaudio torchvision 2>&1 | tail -1; pip install -q "torch==2.8.0" --index-url https://download.pytorch.org/whl/cpu 2>&1 | tail -1; pip install -q "torch_xla[tpu]==2.8.0" 2>&1 | tail -1; python -c "import torch, torch_xla; print('repaired torch', torch.__version__, 'torch_xla', torch_xla.__version__)" 2>&1 | tail -1; }
 export PJRT_DEVICE=TPU
 [ -z "$TPU_ACCELERATOR_TYPE" ] && export TPU_ACCELERATOR_TYPE=v5litepod-8
 MODE=${MODE:-$(cat MODE 2>/dev/null || echo par)}
